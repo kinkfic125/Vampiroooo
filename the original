@@ -1,0 +1,2295 @@
+import json
+import os
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+import random
+import time
+import logging
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+TOKEN_FILE = "config.json"
+DATA_FILE = "vampire_data.json"
+ADMIN_FILE = "admins.json"
+VIP_FILE = "vips.json"
+GUILD_FILE = "guilds.json"
+HOUSE_FILE = "houses.json"
+EVENTS_FILE = "events.json"
+MARKET_FILE = "market.json"
+
+COOLDOWN_ATAQUE = 30
+COOLDOWN_EXPLORAR = 20
+COOLDOWN_DUEL = 45
+COOLDOWN_INVASAO = 300
+COOLDOWN_TORNEIO = 3600
+
+NPCs = {
+    "Klaus Mikaelson": {"locacao": "New Orleans", "tipo": "Original", "reputacao": 0, "idade": 1000, "poder": 100, "dialogo": "Eu sou o Rei"},
+    "Elijah Mikaelson": {"locacao": "New Orleans", "tipo": "Original", "reputacao": 0, "idade": 1050, "poder": 95, "dialogo": "Honra acima de tudo"},
+    "Rebekah Mikaelson": {"locacao": "French Quarter", "tipo": "Original", "reputacao": 0, "idade": 900, "poder": 90, "dialogo": "Vingança é doce"},
+    "Damon Salvatore": {"locacao": "Mystic Falls", "tipo": "Vampiro", "reputacao": 0, "idade": 180, "poder": 75, "dialogo": "Quer aprender a lutar?"},
+    "Stefan Salvatore": {"locacao": "Salvatore School", "tipo": "Vampiro", "reputacao": 0, "idade": 180, "poder": 75, "dialogo": "Redenção é possível"},
+    "Elena Gilbert": {"locacao": "Mystic Falls", "tipo": "Humano", "reputacao": 0, "idade": 18, "poder": 30, "dialogo": "Proteção é tudo"},
+    "Bonnie Bennett": {"locacao": "Mystic Falls", "tipo": "Bruxa", "reputacao": 0, "idade": 18, "poder": 50, "dialogo": "A magia tem um preço"},
+    "Hayley Marshall": {"locacao": "New Orleans", "tipo": "Hibrida", "reputacao": 0, "idade": 35, "poder": 85, "dialogo": "Proteção de filhotes"},
+    "Silas": {"locacao": "Limbo", "tipo": "Imortal", "reputacao": 0, "idade": 2000, "poder": 150, "dialogo": "Eu sou imortal"},
+    "Esther Mikaelson": {"locacao": "Limbo", "tipo": "Bruxa Original", "reputacao": 0, "idade": 1100, "poder": 120, "dialogo": "Maldição ancestral"},
+    "Alaric Saltzman": {"locacao": "Salvatore School", "tipo": "Humano", "reputacao": 0, "idade": 40, "poder": 40, "dialogo": "Protetor"},
+    "Kai Parker": {"locacao": "Limbo", "tipo": "Bruxo", "reputacao": 0, "idade": 22, "poder": 110, "dialogo": "Eu sou o mais poderoso"},
+}
+
+LOCACOES = {
+    "Mystic Falls": "🏘️ Pequena cidade",
+    "Salvatore School": "🏫 Academia",
+    "New Orleans": "👑 Mikaelsons",
+    "French Quarter": "🎭 Klaus",
+    "Mikaelson Compound": "🏰 Fortaleza",
+    "Floresta Escura": "🌲 Perigosa",
+    "Cemitério Antigo": "🪦 Magia",
+    "Lafayette Cemetery": "⚰️ Túmulos",
+    "Limbo": "👻 Espíritos",
+    "Malivore Pit": "🌑 Abismo",
+    "Taverna": "🍻 Social",
+    "Castelo": "🏯 Epicentro",
+    "Laboratório": "🧪 Pesquisa",
+    "Igreja": "⛪ Sagrada",
+    "Prisão Mágica": "🔒 Confinamento"
+}
+
+FACCOES = {
+    "Mikaelson": {"emoji": "👑", "bonus": 0.15, "desc": "Poder Absoluto"},
+    "Salvatore": {"emoji": "🛡️", "bonus": 0.15, "desc": "Proteção"},
+    "Witches": {"emoji": "✨", "bonus": 0.20, "desc": "Magia Pura"},
+    "Werewolf": {"emoji": "🐺", "bonus": 0.20, "desc": "Força Bruta"},
+    "Neutral": {"emoji": "⚖️", "bonus": 0.10, "desc": "Equilibrio"}
+}
+
+PROFISSOES = {
+    "Alquimista": {"skill": "craft", "bonus": 0.30},
+    "Ferreiro": {"skill": "arma", "bonus": 0.20},
+    "Bruxa": {"skill": "magia", "bonus": 0.40},
+    "Caçador": {"skill": "kills", "bonus": 0.25},
+    "Comerciante": {"skill": "ouro", "bonus": 0.30},
+}
+
+RARIDADE = {
+    "Comum": "⚪",
+    "Incomum": "🟢",
+    "Raro": "🔵",
+    "Épico": "🟣",
+    "Lendário": "🟡",
+    "Mítico": "🌈"
+}
+
+SKINS = {
+    "Humano Common": {"desc": "Humano básico", "bonus": 0},
+    "Vampiro Clássico": {"desc": "Vampiro elegante", "bonus": 10},
+    "Lobo Feroz": {"desc": "Lobisomem selvagem", "bonus": 10},
+    "Bruxo Antigo": {"desc": "Bruxa poderosa", "bonus": 10},
+    "Híbrido Divino": {"desc": "Força absoluta", "bonus": 20},
+    "Original Imortal": {"desc": "Lenda viva", "bonus": 30},
+    "Deus do Vampirismo": {"desc": "Poder supremo", "bonus": 50},
+}
+
+def obter_hora_atual():
+    hora = datetime.now().hour
+    return 6 <= hora < 18
+
+def aplicar_bonus_dia_noite(player, base_valor):
+    eh_dia = obter_hora_atual()
+    if player["classe"] == "Humano" and eh_dia:
+        return int(base_valor * 1.3)
+    elif player["classe"] in ["Vampiro", "Original"] and not eh_dia:
+        return int(base_valor * 1.3)
+    elif player["classe"] == "Lobisomem" and not eh_dia:
+        return int(base_valor * 1.2)
+    return base_valor
+
+def calcular_idade_vampiro(data_transformacao):
+    if not data_transformacao:
+        return 0
+    try:
+        if isinstance(data_transformacao, str):
+            data = datetime.fromisoformat(data_transformacao)
+        else:
+            return 0
+        agora = datetime.now()
+        idade = (agora - data).days / 365.25
+        return int(idade)
+    except:
+        return 0
+
+def calcular_poder(classe, idade, nivel, prestige=0):
+    if classe == "Humano":
+        return 0
+    
+    bonus_idade = min(idade * 0.5, 500)
+    bonus_nivel = nivel * 5
+    bonus_prestige = prestige * 10
+    
+    bonus_classe = {
+        "Vampiro": 50,
+        "Lobisomem": 40,
+        "Bruxo": 45,
+        "Híbrido": 70,
+        "Original": 150,
+        "Deus": 250
+    }.get(classe, 0)
+    
+    return int(bonus_classe + bonus_idade + bonus_nivel + bonus_prestige)
+
+def carregar_config():
+    if os.path.exists(TOKEN_FILE):
+        try:
+            with open(TOKEN_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"token": ""}
+    return {"token": ""}
+
+def carregar_admins():
+    if os.path.exists(ADMIN_FILE):
+        try:
+            with open(ADMIN_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"admins": [], "super_admins": []}
+    return {"admins": [], "super_admins": []}
+
+def carregar_vips():
+    if os.path.exists(VIP_FILE):
+        try:
+            with open(VIP_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"vips": [], "vips_premium": []}
+    return {"vips": [], "vips_premium": []}
+
+def carregar_guildas():
+    if os.path.exists(GUILD_FILE):
+        try:
+            with open(GUILD_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"guildas": {}}
+    return {"guildas": {}}
+
+def carregar_casas():
+    if os.path.exists(HOUSE_FILE):
+        try:
+            with open(HOUSE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"casas": {}}
+    return {"casas": {}}
+
+def carregar_mercado():
+    if os.path.exists(MARKET_FILE):
+        try:
+            with open(MARKET_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"items": []}
+    return {"items": []}
+
+def carregar_eventos():
+    if os.path.exists(EVENTS_FILE):
+        try:
+            with open(EVENTS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return criar_eventos_padrao()
+    return criar_eventos_padrao()
+
+def criar_eventos_padrao():
+    agora = datetime.now()
+    return {
+        "eventos_ativos": [],
+        "arena_aberta": True,
+        "torneio_ativo": False,
+        "lua_cheia": False,
+        "eclipse": False,
+        "dia_mortos": False,
+        "natal": False,
+        "halloween": False,
+        "dungeon_aberta": True,
+        "boss_semanal": {"nome": "Silas", "proximo": (agora + timedelta(days=7)).isoformat()},
+    }
+
+def salvar_config(config):
+    with open(TOKEN_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+def salvar_admins(admins):
+    with open(ADMIN_FILE, 'w', encoding='utf-8') as f:
+        json.dump(admins, f, ensure_ascii=False, indent=2)
+
+def salvar_vips(vips):
+    with open(VIP_FILE, 'w', encoding='utf-8') as f:
+        json.dump(vips, f, ensure_ascii=False, indent=2)
+
+def salvar_guildas(guildas):
+    with open(GUILD_FILE, 'w', encoding='utf-8') as f:
+        json.dump(guildas, f, ensure_ascii=False, indent=2)
+
+def salvar_casas(casas):
+    with open(HOUSE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(casas, f, ensure_ascii=False, indent=2)
+
+def salvar_mercado(mercado):
+    with open(MARKET_FILE, 'w', encoding='utf-8') as f:
+        json.dump(mercado, f, ensure_ascii=False, indent=2)
+
+def salvar_eventos(eventos):
+    with open(EVENTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(eventos, f, ensure_ascii=False, indent=2)
+
+def carregar_dados():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return criar_dados_padrao()
+    return criar_dados_padrao()
+
+def criar_dados_padrao():
+    return {
+        "players": {},
+        "mundo": {
+            "locacoes": list(LOCACOES.keys()),
+            "items": ["Sangue Antigo", "Grimório", "Adaga", "Poção", "Cálice", "Cristal", "Essência", "Osso de Lobo", "Ferramenta"]
+        },
+        "npcs": NPCs,
+        "shop": {
+            "items": {
+                "Poção de Cura": {"preco": 100, "raridade": "Comum"},
+                "Amuleto": {"preco": 500, "raridade": "Raro"},
+                "Grimório": {"preco": 300, "raridade": "Incomum"},
+                "Adaga": {"preco": 800, "raridade": "Épico"},
+                "Sangue": {"preco": 150, "raridade": "Comum"},
+                "Cristal": {"preco": 600, "raridade": "Raro"},
+                "Escudo": {"preco": 700, "raridade": "Épico"},
+                "Elixir Vida": {"preco": 1000, "raridade": "Lendário"},
+            }
+        },
+        "boss": [
+            {"nome": "Silas", "saude": 500, "ataque": 30, "defesa": 15, "ouro": 1000, "xp": 500, "dificuldade": "Insano"},
+            {"nome": "Esther", "saude": 400, "ataque": 25, "defesa": 20, "ouro": 800, "xp": 400, "dificuldade": "Difícil"},
+            {"nome": "Malivore", "saude": 600, "ataque": 35, "defesa": 10, "ouro": 1200, "xp": 600, "dificuldade": "Impossível"},
+            {"nome": "Klaus", "saude": 700, "ataque": 40, "defesa": 25, "ouro": 2000, "xp": 1000, "dificuldade": "Lendário"},
+            {"nome": "Deus", "saude": 1000, "ataque": 50, "defesa": 30, "ouro": 5000, "xp": 2000, "dificuldade": "Mítico"}
+        ]
+    }
+
+def salvar_dados(dados):
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(dados, f, ensure_ascii=False, indent=2)
+
+def criar_player(nome, user_id):
+    agora = datetime.now()
+    return {
+        "nome": nome,
+        "user_id": user_id,
+        "classe": "Humano",
+        "idade_vampiro": 0,
+        "data_transformacao": None,
+        "nivel": 1,
+        "xp": 0,
+        "energia": 100,
+        "fome": 0,
+        "saude": 100,
+        "locacao": "Mystic Falls",
+        "transformacoes": [],
+        "status": "vivo",
+        "kills": 0,
+        "mortes": 0,
+        "inventario": [],
+        "habilidades": [],
+        "ouro": 100,
+        "defesa": 0,
+        "ataque": 5,
+        "poder": 5,
+        "titulo": "Novato",
+        "bio": "Um sobrenatura",
+        "duelos_ganhos": 0,
+        "duelos_perdidos": 0,
+        "bancos_ouro": 0,
+        "skill_points": 0,
+        "skill_ataque": 0,
+        "skill_defesa": 0,
+        "skill_energia": 0,
+        "combo_count": 0,
+        "ultimo_ataque": 0,
+        "ultimo_explorar": 0,
+        "ultimo_duel": 0,
+        "ultimo_invasao": 0,
+        "ultimo_torneio": 0,
+        "achievements": [],
+        "reputacao_npcs": {npc: 0 for npc in NPCs.keys()},
+        "faccao": "Neutral",
+        "nvl_magia": 0,
+        "rituais_feitos": 0,
+        "lvl_essencia": 0,
+        "moedas_especiais": 0,
+        "skin": "Humano Common",
+        "data_criacao": agora.isoformat(),
+        "propriedades": [],
+        "negocios": [],
+        "renda_passiva": 0,
+        "profissao": None,
+        "pet": None,
+        "guild": None,
+        "filhos": [],
+        "daily_rewards_coletados": 0,
+        "daily_last_collect": None,
+        "prestige": 0,
+        "prestige_power": 0,
+        "casa": None,
+        "mentor": None,
+        "grimorio_pessoal": [],
+        "livros": [],
+        "maldições": [],
+        "eventos_ganhos": [],
+        "torneio_rank": 0,
+        "arena_rank": 0,
+        "trading_permitido": True,
+        "invasoes_sofridas": 0,
+        "roubos_sofridos": 0,
+        "seguro_ativo": False,
+        "nitidez_combate": 0,
+        "acessorios": [],
+        "arma_equipada": None,
+        "montaria": None,
+        "transmutacoes_feitas": 0,
+        "slots_salvos": 0,
+        "dungeon_kills": 0,
+        "boss_kills": 0,
+        "spell_aprendidos": [],
+        "alchemy_level": 0,
+        "smithy_level": 0,
+        "gravidade_escura": 0,
+    }
+
+def ganhar_xp(player, qtd, bonus_vip=1):
+    xp_final = int(qtd * bonus_vip)
+    player["xp"] += xp_final
+    xp_necessario = player["nivel"] * 100
+    
+    if player["xp"] >= xp_necessario:
+        player["nivel"] += 1
+        player["xp"] = 0
+        player["ataque"] += 2
+        player["saude"] += 10
+        player["skill_points"] += 3
+        player["poder"] = calcular_poder(player["classe"], player["idade_vampiro"], player["nivel"], player["prestige"])
+        return True
+    return False
+
+def desbloquear_habilidade(player):
+    habilidades = {
+        "Vampiro": [
+            {"nome": "Mordida", "dano": 25, "energia": 20},
+            {"nome": "Velocidade", "dano": 0, "energia": 15},
+            {"nome": "Hipnose", "dano": 0, "energia": 25}
+        ],
+        "Lobisomem": [
+            {"nome": "Transformação", "dano": 30, "energia": 30},
+            {"nome": "Garras", "dano": 20, "energia": 15},
+            {"nome": "Uivo", "dano": 15, "energia": 20}
+        ],
+        "Bruxo": [
+            {"nome": "Magia", "dano": 35, "energia": 25},
+            {"nome": "Proteção", "dano": 0, "energia": 20},
+            {"nome": "Fogo", "dano": 28, "energia": 22}
+        ],
+        "Híbrido": [
+            {"nome": "Força", "dano": 40, "energia": 30},
+            {"nome": "Regeneração", "dano": 0, "energia": 35},
+            {"nome": "Maldição", "dano": 50, "energia": 40}
+        ],
+        "Original": [
+            {"nome": "Imortalidade", "dano": 60, "energia": 50},
+            {"nome": "Compulsão", "dano": 0, "energia": 40},
+            {"nome": "Telecinese", "dano": 45, "energia": 35}
+        ],
+        "Deus": [
+            {"nome": "Poder Divino", "dano": 100, "energia": 80},
+            {"nome": "Invulnerabilidade", "dano": 0, "energia": 70},
+            {"nome": "Aniquilação", "dano": 150, "energia": 100}
+        ]
+    }
+    if player["classe"] in habilidades:
+        player["habilidades"] = habilidades[player["classe"]]
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            dados["players"][user_id] = criar_player(update.effective_user.first_name, user_id)
+            salvar_dados(dados)
+        
+        eh_dia = "☀️ DIA" if obter_hora_atual() else "🌙 NOITE"
+        hora = datetime.now().strftime('%H:%M')
+        
+        keyboard = [
+            [InlineKeyboardButton("👤 Perfil", callback_data="perfil"), InlineKeyboardButton("🎒 Inv", callback_data="inventario")],
+            [InlineKeyboardButton("⚔️ Atacar", callback_data="atacar"), InlineKeyboardButton("🛡️ Duel", callback_data="duel")],
+            [InlineKeyboardButton("📍 Explorar", callback_data="explorar"), InlineKeyboardButton("🌍 Mundo", callback_data="mundo")],
+            [InlineKeyboardButton("💀 Habilidades", callback_data="habilidades"), InlineKeyboardButton("🧙 Magia", callback_data="magia")],
+            [InlineKeyboardButton("🛍️ Shop", callback_data="shop"), InlineKeyboardButton("👹 Boss", callback_data="boss")],
+            [InlineKeyboardButton("📋 Quests", callback_data="quests"), InlineKeyboardButton("🏆 Ranking", callback_data="ranking")],
+            [InlineKeyboardButton("👥 NPCs", callback_data="npcs"), InlineKeyboardButton("🎭 Fações", callback_data="faccoes")],
+            [InlineKeyboardButton("🏢 Guild", callback_data="guildas"), InlineKeyboardButton("🏰 Casa", callback_data="casa")],
+            [InlineKeyboardButton("⚔️ Arena", callback_data="arena"), InlineKeyboardButton("🎪 Eventos", callback_data="eventos")],
+            [InlineKeyboardButton("💎 VIP", callback_data="vip_menu"), InlineKeyboardButton("🔐 Admin", callback_data="admin_menu")],
+            [InlineKeyboardButton("📊 Stats", callback_data="stats"), InlineKeyboardButton("📚 Grimório", callback_data="grimorio")],
+            [InlineKeyboardButton("👶 Filhos", callback_data="filhos"), InlineKeyboardButton("⚗️ Transmutação", callback_data="transmutacao")],
+            [InlineKeyboardButton("🏠 Invadir", callback_data="invasao"), InlineKeyboardButton("💰 Mercado", callback_data="mercado")],
+            [InlineKeyboardButton("✨ Prestige", callback_data="prestige")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"🧛‍♂️ **THE VAMPIRE DIARIES ULTIMATE RPG**\n\n"
+            f"{eh_dia} - {hora}\n\n"
+            f"Bem-vindo ao maior RPG TVD com 50+ Sistemas!\n"
+            f"Escolha sua ação:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em start: {e}")
+# ============ HANDLERS DE BOTÕES - PARTE 2 ============
+
+async def perfil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra perfil do jogador"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            await query.edit_message_text("❌ Perfil não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        vips = carregar_vips()
+        admins = carregar_admins()
+        
+        emoji_classe = {
+            "Humano": "👤",
+            "Vampiro": "🧛‍♂️",
+            "Lobisomem": "🐺",
+            "Bruxo": "✨",
+            "Híbrido": "💀",
+            "Original": "👑",
+            "Deus": "💎"
+        }
+        
+        eh_dia = "☀️" if obter_hora_atual() else "🌙"
+        idade_texto = f"\n📅 Idade: {player['idade_vampiro']} anos (Prestige {player['prestige']})" if player['classe'] != "Humano" else ""
+        status_vip = "💎 VIP" if user_id in vips["vips"] else ("💎💎 PREMIUM" if user_id in vips["vips_premium"] else "")
+        status_admin = "🔑 ADMIN" if user_id in admins["admins"] else ("🔑🔑 SUPER" if user_id in admins["super_admins"] else "")
+        casa_info = f"\n🏠 Casa: {player['casa']}" if player["casa"] else ""
+        guild_info = f"\n🏢 Guild: {player['guild']}" if player["guild"] else ""
+        profissao_info = f"\n💼 Profissão: {player['profissao']}" if player["profissao"] else ""
+        
+        texto = (
+            f"{emoji_classe.get(player['classe'], '❓')} **{player['nome']}**\n"
+            f"{status_vip} {status_admin} {eh_dia}\n\n"
+            f"📌 {player['titulo']}\n"
+            f"📈 Nv{player['nivel']} ({player['prestige']}P) | XP: {player['xp']}/{player['nivel']*100}\n"
+            f"❤️ {player['saude']}/100 | ⚡ {player['energia']}/100\n"
+            f"💪 Poder: {player['poder']}\n"
+            f"🎭 {player['faccao']}{idade_texto}{casa_info}{guild_info}{profissao_info}\n"
+            f"⚔️ Kills: {player['kills']} | 💀 Mortes: {player['mortes']}\n"
+            f"💰 {player['ouro']} | 🏦 {player['bancos_ouro']}\n"
+            f"📊 Duelos: {player['duelos_ganhos']}W/{player['duelos_perdidos']}L"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📈 Skills", callback_data="skills"), InlineKeyboardButton("🔙 Menu", callback_data="menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em perfil: {e}")
+
+async def inventario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra inventário"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        if not player["inventario"]:
+            texto = "🎒 Inventário vazio!"
+        else:
+            texto = "🎒 **INVENTÁRIO**\n\n"
+            for item in player["inventario"]:
+                texto += f"• {item['nome']} (x{item['quantidade']})\n"
+        
+        texto += f"\n💰 {player['ouro']} | 🏦 {player['bancos_ouro']}\n"
+        texto += f"📦 Slots: {len(player['inventario'])}/20"
+        
+        keyboard = [
+            [InlineKeyboardButton("🏦 Banco", callback_data="banco"), InlineKeyboardButton("🔨 Craft", callback_data="craftar")],
+            [InlineKeyboardButton("💰 Mercado", callback_data="mercado"), InlineKeyboardButton("🔙 Menu", callback_data="menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em inventario: {e}")
+
+async def banco(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de banco"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = f"🏦 **BANCO SEGURO**\n\n"
+        texto += f"💰 Em mão: {player['ouro']}\n"
+        texto += f"🏦 Guardado: {player['bancos_ouro']}\n"
+        texto += f"📊 Total: {player['ouro'] + player['bancos_ouro']}"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕50", callback_data="banco_dep_50"), InlineKeyboardButton("➕100", callback_data="banco_dep_100")],
+            [InlineKeyboardButton("➕500", callback_data="banco_dep_500"), InlineKeyboardButton("➕1000", callback_data="banco_dep_1000")],
+            [InlineKeyboardButton("➖50", callback_data="banco_sac_50"), InlineKeyboardButton("➖100", callback_data="banco_sac_100")],
+            [InlineKeyboardButton("➖500", callback_data="banco_sac_500"), InlineKeyboardButton("➖1000", callback_data="banco_sac_1000")],
+            [InlineKeyboardButton("🔙 Menu", callback_data="inventario")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em banco: {e}")
+
+async def craftar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menu de craft"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        texto = "🔨 **CRAFTING DE POÇÕES**\n\n"
+        texto += "**Receitas:**\n"
+        texto += "• Poção de Cura: Sangue x2 → +50 HP\n"
+        texto += "• Poção de Força: Grimório + Sangue → +20 Ataque\n"
+        texto += "• Elixir de Vida: Cálice x1 → Regeneração\n"
+        texto += "• Ritual de Poder: Cristal x1 → +50 XP\n"
+        texto += "• Maldição: Essência x2 → Debuff inimigo\n"
+        texto += "• Poção de Velocidade: Adaga + Essência → +30% Vel\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("⚗️ Cura", callback_data="craft_cura"), InlineKeyboardButton("💪 Força", callback_data="craft_forca")],
+            [InlineKeyboardButton("🧪 Elixir", callback_data="craft_elixir"), InlineKeyboardButton("✨ Ritual", callback_data="craft_ritual")],
+            [InlineKeyboardButton("💀 Maldição", callback_data="craft_maldicao"), InlineKeyboardButton("🏃 Velocidade", callback_data="craft_velocidade")],
+            [InlineKeyboardButton("🔙 Menu", callback_data="inventario")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em craftar: {e}")
+
+async def atacar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Atacar outro jogador"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        vips = carregar_vips()
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        if player["classe"] == "Humano":
+            await query.answer("❌ Humanos não podem atacar!")
+            return
+        
+        cooldown = COOLDOWN_ATAQUE
+        if user_id in vips["vips_premium"]:
+            cooldown = int(cooldown * 0.5)
+        elif user_id in vips["vips"]:
+            cooldown = int(cooldown * 0.75)
+        
+        agora = time.time()
+        if agora - player["ultimo_ataque"] < cooldown:
+            tempo_falta = int(cooldown - (agora - player["ultimo_ataque"]))
+            await query.answer(f"⏳ Aguarde {tempo_falta}s")
+            return
+        
+        alvos = [p for p in dados["players"].values() if p["nome"] != player["nome"] and p["status"] == "vivo"]
+        if not alvos:
+            await query.answer("❌ Sem alvos!")
+            return
+        
+        alvo = random.choice(alvos)
+        
+        bonus_idade = player["idade_vampiro"] * 0.5 if player["classe"] != "Humano" else 0
+        dano_base = random.randint(player["ataque"], player["ataque"] + 20)
+        dano = int((dano_base + bonus_idade) - alvo["defesa"])
+        dano = max(1, dano)
+        
+        dano = aplicar_bonus_dia_noite(player, dano)
+        
+        alvo["saude"] -= dano
+        player["ultimo_ataque"] = agora
+        player["combo_count"] += 1
+        
+        if alvo["saude"] <= 0:
+            alvo["status"] = "morto"
+            alvo["mortes"] += 1
+            player["kills"] += 1
+            ganhar_xp(player, 100)
+            bonus_combo = player["combo_count"] * 10
+            player["ouro"] += bonus_combo
+            res = f"💀 **{alvo['nome']} MORREU!**\n\nBonus combo: +{bonus_combo} ouro"
+        else:
+            ganhar_xp(player, 25)
+            res = f"⚔️ Dano: {dano}\nSaúde: {max(0, alvo['saude'])}/100"
+        
+        salvar_dados(dados)
+        
+        eh_dia = "☀️" if obter_hora_atual() else "🌙"
+        await query.answer("⚔️ Ataque!")
+        await query.edit_message_text(f"⚔️ **{alvo['nome']}** {eh_dia}\n\n{res}", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em atacar: {e}")
+
+async def explorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Explorar locações"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        vips = carregar_vips()
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        cooldown = COOLDOWN_EXPLORAR
+        if user_id in vips["vips_premium"]:
+            cooldown = int(cooldown * 0.5)
+        elif user_id in vips["vips"]:
+            cooldown = int(cooldown * 0.75)
+        
+        agora = time.time()
+        if agora - player["ultimo_explorar"] < cooldown:
+            tempo_falta = int(cooldown - (agora - player["ultimo_explorar"]))
+            await query.answer(f"⏳ Aguarde {tempo_falta}s")
+            return
+        
+        loc = random.choice(dados["mundo"]["locacoes"])
+        player["locacao"] = loc
+        player["ultimo_explorar"] = agora
+        
+        item = random.choice(dados["mundo"]["items"])
+        tem = False
+        for i in player["inventario"]:
+            if i["nome"] == item:
+                i["quantidade"] += 1
+                tem = True
+                break
+        
+        if not tem:
+            player["inventario"].append({"nome": item, "quantidade": 1})
+        
+        ouro = random.randint(50, 200)
+        if user_id in vips["vips_premium"]:
+            ouro = int(ouro * 1.5)
+        elif user_id in vips["vips"]:
+            ouro = int(ouro * 1.25)
+        
+        player["ouro"] += ouro
+        ganhar_xp(player, 15)
+        
+        salvar_dados(dados)
+        
+        eh_dia = "☀️ DIA" if obter_hora_atual() else "🌙 NOITE"
+        await query.answer("��� Explorado!")
+        await query.edit_message_text(
+            f"🌍 **{loc}** {eh_dia}\n\n🎁 Item: {item}\n💰 +{ouro}$\n✨ +15 XP",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em explorar: {e}")
+
+async def duel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de duelos"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        agora = time.time()
+        if agora - player["ultimo_duel"] < COOLDOWN_DUEL:
+            tempo_falta = int(COOLDOWN_DUEL - (agora - player["ultimo_duel"]))
+            await query.answer(f"⏳ Aguarde {tempo_falta}s")
+            return
+        
+        alvos = [p for p in dados["players"].values() if p["nome"] != player["nome"] and p["status"] == "vivo"]
+        if not alvos:
+            await query.answer("❌ Sem oponentes!")
+            return
+        
+        op = random.choice(alvos)
+        
+        bonus_idade_p = player["idade_vampiro"] * 0.3 if player["classe"] != "Humano" else 0
+        bonus_idade_o = op["idade_vampiro"] * 0.3 if op["classe"] != "Humano" else 0
+        
+        d1 = random.randint(int(player["ataque"] + bonus_idade_p), int(player["ataque"] + 15 + bonus_idade_p)) - op["defesa"]
+        d2 = random.randint(int(op["ataque"] + bonus_idade_o), int(op["ataque"] + 15 + bonus_idade_o)) - player["defesa"]
+        
+        d1, d2 = max(1, d1), max(1, d2)
+        d1 = aplicar_bonus_dia_noite(player, d1)
+        d2 = aplicar_bonus_dia_noite(op, d2)
+        
+        ganhou = d1 > d2
+        
+        op["saude"] -= d1
+        player["saude"] -= d2
+        player["ultimo_duel"] = agora
+        
+        if ganhou:
+            player["duelos_ganhos"] += 1
+            op["duelos_perdidos"] += 1
+            ganhar_xp(player, 50)
+            player["ouro"] += 100
+            player["arena_rank"] = player.get("arena_rank", 0) + 1
+            res = "✅ VITÓRIA!"
+        else:
+            player["duelos_perdidos"] += 1
+            player["arena_rank"] = max(0, player.get("arena_rank", 1) - 1)
+            res = "❌ DERROTA!"
+        
+        salvar_dados(dados)
+        
+        await query.answer("⚔️ Duel!")
+        await query.edit_message_text(
+            f"⚔️ **{op['nome']}**\n\nSeu dano: {d1}\nDano dele: {d2}\n\n{res}\nSeu novo rank: {player.get('arena_rank', 0)}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em duel: {e}")
+
+async def boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lutar contra bosses"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        if player["classe"] == "Humano":
+            await query.answer("❌ Humanos não podem!")
+            return
+        
+        boss = random.choice(dados["boss"])
+        
+        bonus_idade = player["idade_vampiro"] * 0.2 if player["classe"] != "Humano" else 0
+        
+        d1 = random.randint(int(player["ataque"] + bonus_idade), int(player["ataque"] + 25 + bonus_idade)) - boss["defesa"]
+        d2 = random.randint(boss["ataque"], boss["ataque"] + 15) - player["defesa"]
+        
+        d1, d2 = max(1, d1), max(1, d2)
+        d1 = aplicar_bonus_dia_noite(player, d1)
+        
+        boss["saude"] -= d1
+        player["saude"] -= d2
+        
+        if boss["saude"] <= 0:
+            player["ouro"] += boss["ouro"]
+            ganhar_xp(player, boss["xp"])
+            player["boss_kills"] += 1
+            boss["saude"] = 500
+            res = f"🏆 **VITÓRIA!**\n\n+{boss['ouro']}$ +{boss['xp']} XP"
+        elif player["saude"] <= 0:
+            player["status"] = "morto"
+            player["mortes"] += 1
+            res = "💀 **DERROTA!**"
+        else:
+            res = "⚔️ Combatendo..."
+        
+        salvar_dados(dados)
+        
+        await query.answer("Boss!")
+        await query.edit_message_text(
+            f"👹 **{boss['nome']}** - {boss['dificuldade']}\n\nBoss: {boss['saude']}/999\nVocê: {player['saude']}/100\n\n{res}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em boss: {e}")
+
+async def mundo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra locações"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        texto = "🌍 **LOCAÇÕES DO UNIVERSO TVD**\n\n"
+        for loc, desc in LOCACOES.items():
+            texto += f"• {loc} - {desc}\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em mundo: {e}")
+
+async def habilidades(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra habilidades"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        if not player["habilidades"]:
+            texto = "❌ Sem habilidades desbloqueadas!"
+        else:
+            texto = "💀 **HABILIDADES**\n\n"
+            for h in player["habilidades"]:
+                texto += f"⚡ **{h['nome']}**\n   Dano: {h['dano']} | Energia: {h['energia']}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Transformar", callback_data="transformar"), InlineKeyboardButton("🔙 Menu", callback_data="menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em habilidades: {e}")
+
+async def transformar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menu de transformação"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        if player["classe"] != "Humano":
+            await query.answer("❌ Já é um sobrenormal!")
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("🧛 Vampiro", callback_data="trans_vampiro"), InlineKeyboardButton("🐺 Lobo", callback_data="trans_lobo")],
+            [InlineKeyboardButton("✨ Bruxo", callback_data="trans_bruxo"), InlineKeyboardButton("💀 Híbrido", callback_data="trans_hibrido")],
+            [InlineKeyboardButton("👑 Original", callback_data="trans_original"), InlineKeyboardButton("🔙 Menu", callback_data="habilidades")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text("🔄 **ESCOLHA SUA TRANSFORMAÇÃO**", reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em transformar: {e}")
+
+async def npcs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra NPCs"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = "👥 **NPCs - IDADE & PODER**\n\n"
+        
+        for npc, info in dados["npcs"].items():
+            rep = player["reputacao_npcs"].get(npc, 0)
+            rep_emoji = "❤️" if rep > 50 else ("💛" if rep > 0 else "⚪")
+            texto += f"{rep_emoji} **{npc}** ({info['idade']}a)\n   {info['tipo']} | Poder: {info['poder']}\n   '{info['dialogo']}'\n\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em npcs: {e}")
+
+async def quests(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra quests"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        texto = "📋 **QUESTS ÉPICAS**\n\n"
+        texto += "1️⃣ Proteger Mystic Falls - 500 XP\n"
+        texto += "2️⃣ Conquista New Orleans - 1000 XP\n"
+        texto += "3️⃣ Mestre da Magia - 750 XP\n"
+        texto += "4️⃣ Líder Alcateia - 600 XP\n"
+        texto += "5️⃣ Derrotar Silas - 2000 XP\n"
+        texto += "6️⃣ 1000 Anos de Idade - 5000 XP\n"
+        texto += "7️⃣ Prestige 5 vezes - 3000 XP\n"
+        texto += "8️⃣ Ganhar Arena - 800 XP\n"
+        texto += "9️⃣ Completar Dungeon - 1500 XP\n"
+        texto += "🔟 Casar com Jogador - 1200 XP"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em quests: {e}")
+
+async def faccoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra fações"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = "🎭 **FAÇÕES DO UNIVERSO**\n\n"
+        
+        for fac, info in FACCOES.items():
+            selecionada = "✅" if player["faccao"] == fac else "❌"
+            bonus_pct = int(info['bonus'] * 100)
+            texto += f"{selecionada} {info['emoji']} **{fac}** - +{bonus_pct}%\n   {info['desc']}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("👑 Mikaelson", callback_data="fac_mikaelson"), InlineKeyboardButton("🛡️ Salvatore", callback_data="fac_salvatore")],
+            [InlineKeyboardButton("✨ Witches", callback_data="fac_witches"), InlineKeyboardButton("🐺 Werewolf", callback_data="fac_werewolf")],
+            [InlineKeyboardButton("⚖️ Neutral", callback_data="fac_neutral"), InlineKeyboardButton("🔙 Menu", callback_data="menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em faccoes: {e}")
+
+async def guildas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de guildas"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        guildas_data = carregar_guildas()
+        user_id = str(update.effective_user.id)
+        dados = carregar_dados()
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = "🏢 **GUILDAS DO UNIVERSO**\n\n"
+        
+        if not guildas_data["guildas"]:
+            texto += "Nenhuma guilda criada ainda!"
+        else:
+            for guild_nome, guild_info in guildas_data["guildas"].items():
+                membros = len(guild_info.get("membros", []))
+                poder = guild_info.get("poder", 0)
+                lider = guild_info.get("lider", "Desconhecido")
+                texto += f"👑 **{guild_nome}**\n   Líder: {lider}\n   Membros: {membros}\n   Poder: {poder}\n\n"
+        
+        if player["guild"]:
+            texto += f"\n✅ Você está em: **{player['guild']}**"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em guildas: {e}")
+
+async def casa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de casa/mansão"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        if player["casa"]:
+            casas_data = carregar_casas()
+            casa_data = casas_data["casas"].get(player["casa"], {})
+            renda = casa_data.get("renda_passiva", 0)
+            nivel = casa_data.get("nivel", 1)
+            
+            texto = f"🏰 **SUA CASA**\n\nNome: {player['casa']}\nNível: {nivel}\nRenda/dia: {renda}"
+        else:
+            texto = f"🏰 **COMPRAR CASA**\n\n"
+            texto += f"Casa Básica: 5000 ouro (renda 50/dia)\n"
+            texto += f"Casa Luxuosa: 15000 ouro (renda 150/dia)\n"
+            texto += f"Mansão: 50000 ouro (renda 500/dia)\n"
+            texto += f"Castelo: 100000 ouro (renda 1000/dia)\n\n"
+            texto += f"Seu ouro: {player['ouro']}"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Comprar", callback_data="comprar_casa"), InlineKeyboardButton("🔙 Menu", callback_data="menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em casa: {e}")
+
+async def arena(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de arena"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        players_arena = [p for p in dados["players"].values() if p["status"] == "vivo" and p["nome"] != player["nome"]]
+        
+        if not players_arena:
+            await query.answer("❌ Sem oponentes!")
+            return
+        
+        ranking_arena = sorted(players_arena, key=lambda x: x.get("arena_rank", 0), reverse=True)
+        
+        texto = f"⚔️ **ARENA GLOBAL**\n\nSeu Rank: {player.get('arena_rank', 0)}\n\n**Top 5 Arena:**\n"
+        
+        for i, p in enumerate(ranking_arena[:5], 1):
+            texto += f"{i}. {p['nome']} - Rank {p.get('arena_rank', 0)}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("⚔️ Desafiar", callback_data="desafiar_arena"), InlineKeyboardButton("🔙 Menu", callback_data="menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em arena: {e}")
+
+async def eventos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de eventos"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        texto = "🎪 **EVENTOS GLOBAIS**\n\n"
+        texto += "🎃 **HALLOWEEN!** - Monstros +50% dano\n"
+        texto += "🎄 **NATAL!** - Presentes diários\n"
+        texto += "👻 **DIA DE MORTOS!** - Limbo acessível\n"
+        texto += "🌕 **LUA CHEIA!** - Lobisomens +30%\n"
+        texto += "⚔️ **ARENA ABERTA!** - Duelos globais\n"
+        texto += "🏴‍☠️ **DUNGEON ABERTA!** - Calabouço Salvatore\n\n"
+        texto += "📅 Próximos eventos em 7 dias"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em eventos: {e}")
+
+async def grimorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Grimório pessoal"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        descobertos = len(player.get("grimorio_pessoal", []))
+        
+        texto = f"📚 **GRIMÓRIO PESSOAL**\n\n"
+        texto += f"Feitiços Descobertos: {descobertos}/10\n"
+        texto += f"Nível de Magia: {player['nvl_magia']}\n\n"
+        
+        if player.get("grimorio_pessoal"):
+            texto += "**Feitiços Descobertos:**\n"
+            for feitico in player["grimorio_pessoal"]:
+                texto += f"✨ {feitico}\n"
+        else:
+            texto += "Nenhum feitiço descoberto ainda!"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em grimorio: {e}")
+
+async def filhos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de filhos"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = f"👶 **FILHOS E HERANÇA**\n\n"
+        
+        if not player["filhos"]:
+            texto += "Você não tem filhos ainda.\n\n"
+            texto += "Para ter filhos:\n"
+            texto += "• Procure outro jogador\n"
+            texto += "• Faça um ritual de união\n"
+            texto += "• Custo: 1000 ouro\n"
+        else:
+            texto += f"Filhos: {len(player['filhos'])}\n\n"
+            for filho in player["filhos"]:
+                texto += f"👶 **{filho['nome']}**\n"
+                texto += f"   Classe: {filho.get('classe', 'Humano')}\n"
+                texto += f"   Nível: {filho.get('nivel', 5)}\n\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em filhos: {e}")
+
+async def transmutacao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de transmutação"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = f"⚗️ **TRANSMUTAÇÃO DE ITENS**\n\n"
+        texto += f"Transmutações Feitas: {player['transmutacoes_feitas']}\n\n"
+        texto += f"**Receitas:**\n"
+        texto += f"• 3x Sangue → Essência\n"
+        texto += f"• 2x Grimório → Cristal\n"
+        texto += f"• 5x Poção → Elixir Raro\n"
+        texto += f"• 1x Cristal + 1x Essência → Item Lendário\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em transmutacao: {e}")
+
+async def invasao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de invasão"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        agora = time.time()
+        if agora - player.get("ultimo_invasao", 0) < COOLDOWN_INVASAO:
+            tempo_falta = int(COOLDOWN_INVASAO - (agora - player.get("ultimo_invasao", 0)))
+            await query.answer(f"⏳ Cooldown: {tempo_falta}s")
+            return
+        
+        alvos = [p for p in dados["players"].values() if p["casa"] and p["nome"] != player["nome"] and p["status"] == "vivo"]
+        
+        if not alvos:
+            await query.answer("❌ Sem casas para invadir!")
+            return
+        
+        alvo = random.choice(alvos)
+        sucesso = random.randint(1, 100) > 40
+        
+        if sucesso:
+            roubo = random.randint(100, 500)
+            alvo["ouro"] = max(0, alvo["ouro"] - roubo)
+            player["ouro"] += roubo
+            res = f"✅ **INVASÃO BEM-SUCEDIDA!**\n\nRoubou {roubo} ouro de {alvo['nome']}!"
+        else:
+            res = f"❌ **INVASÃO FRACASSADA!**"
+            player["energia"] = max(0, player["energia"] - 50)
+        
+        player["ultimo_invasao"] = agora
+        salvar_dados(dados)
+        
+        await query.answer("🏠 Invasão!")
+        await query.edit_message_text(res, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em invasao: {e}")
+
+async def mercado(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mercado global"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        mercado_data = carregar_mercado()
+        user_id = str(update.effective_user.id)
+        dados = carregar_dados()
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = "💰 **MERCADO GLOBAL**\n\n"
+        texto += f"Seu ouro: {player['ouro']}\n\n"
+        
+        if not mercado_data["items"]:
+            texto += "Nenhum item à venda no momento!"
+        else:
+            for i, item in enumerate(mercado_data["items"][:10], 1):
+                texto += f"{i}. **{item['nome']}** - {item['preco']} ouro\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em mercado: {e}")
+
+async def prestige(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de prestige"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        if player["nivel"] < 50:
+            await query.answer(f"❌ Precisa nível 50! Atual: {player['nivel']}")
+            return
+        
+        bonus_poder = (player["prestige"] + 1) * 10
+        texto = (
+            f"✨ **PRESTIGE**\n\n"
+            f"Prestige Atual: {player['prestige']}\n"
+            f"Bônus de Poder: +{bonus_poder}%\n"
+            f"Nível: {player['nivel']}\n\n"
+            f"Ao fazer Prestige:\n"
+            f"• Seu nível resetará para 1\n"
+            f"• Você ganhará +1 Prestige\n"
+            f"• +10% poder permanente\n"
+            f"• Titulo especial (Prestige {player['prestige'] + 1})\n"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("✨ Fazer Prestige", callback_data="confirmar_prestige"), InlineKeyboardButton("❌ Cancelar", callback_data="perfil")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em prestige: {e}")
+
+async def shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Loja"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = f"🛍️ **LOJA**\n\n💰 {player['ouro']}\n\n"
+        
+        for nome, info in dados["shop"]["items"].items():
+            texto += f"• {nome} - {info['preco']}$\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("💊 Cura", callback_data="comp_potion"), InlineKeyboardButton("🛡️ Amuleto", callback_data="comp_amuleto")],
+            [InlineKeyboardButton("📖 Grimório", callback_data="comp_grimorio"), InlineKeyboardButton("⚔️ Adaga", callback_data="comp_adaga")],
+            [InlineKeyboardButton("🩸 Sangue", callback_data="comp_sangue"), InlineKeyboardButton("💎 Cristal", callback_data="comp_cristal")],
+            [InlineKeyboardButton("🛡️ Escudo", callback_data="comp_escudo"), InlineKeyboardButton("✨ Elixir", callback_data="comp_elixir")],
+            [InlineKeyboardButton("🔙 Menu", callback_data="menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em shop: {e}")
+
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ranking global"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        
+        players = sorted(dados["players"].values(), key=lambda x: x["kills"], reverse=True)[:10]
+        
+        texto = "🏆 **TOP 10 MATADORES**\n\n"
+        
+        for i, p in enumerate(players, 1):
+            emojis = ["🥇", "🥈", "🥉"]
+            emoji = emojis[i-1] if i <= 3 else f"{i}."
+            texto += f"{emoji} {p['nome']} - {p['kills']} kills (Nv{p['nivel']})\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em ranking: {e}")
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Estatísticas"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        
+        total = len(dados["players"])
+        vamp = sum(1 for p in dados["players"].values() if p["classe"] == "Vampiro")
+        lobo = sum(1 for p in dados["players"].values() if p["classe"] == "Lobisomem")
+        brux = sum(1 for p in dados["players"].values() if p["classe"] == "Bruxo")
+        
+        texto = f"📊 **STATS GLOBAIS**\n\n"
+        texto += f"Total: {total}\n"
+        texto += f"🧛 Vamp: {vamp}\n"
+        texto += f"🐺 Lobi: {lobo}\n"
+        texto += f"✨ Bruxo: {brux}"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em stats: {e}")
+
+async def skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Skills e pontos"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = f"📈 **SKILL POINTS: {player['skill_points']}**\n\n"
+        texto += f"💪 Ataque: {player['skill_ataque']}\n"
+        texto += f"🛡️ Defesa: {player['skill_defesa']}\n"
+        texto += f"⚡ Energia: {player['skill_energia']}"
+        
+        if player['skill_points'] > 0:
+            keyboard = [
+                [InlineKeyboardButton("➕ Ataque", callback_data="skill_ataque"), InlineKeyboardButton("➕ Defesa", callback_data="skill_defesa")],
+                [InlineKeyboardButton("➕ Energia", callback_data="skill_energia"), InlineKeyboardButton("🔙 Menu", callback_data="perfil")]
+            ]
+        else:
+            keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="perfil")]]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em skills: {e}")
+
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menu principal"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        keyboard = [
+            [InlineKeyboardButton("👤 Perfil", callback_data="perfil"), InlineKeyboardButton("🎒 Inv", callback_data="inventario")],
+            [InlineKeyboardButton("⚔️ Atacar", callback_data="atacar"), InlineKeyboardButton("🛡️ Duel", callback_data="duel")],
+            [InlineKeyboardButton("📍 Explorar", callback_data="explorar"), InlineKeyboardButton("🌍 Mundo", callback_data="mundo")],
+            [InlineKeyboardButton("💀 Habilidades", callback_data="habilidades"), InlineKeyboardButton("🧙 Magia", callback_data="magia")],
+            [InlineKeyboardButton("🛍️ Shop", callback_data="shop"), InlineKeyboardButton("👹 Boss", callback_data="boss")],
+            [InlineKeyboardButton("📋 Quests", callback_data="quests"), InlineKeyboardButton("🏆 Ranking", callback_data="ranking")],
+            [InlineKeyboardButton("👥 NPCs", callback_data="npcs"), InlineKeyboardButton("🎭 Fações", callback_data="faccoes")],
+            [InlineKeyboardButton("🏢 Guild", callback_data="guildas"), InlineKeyboardButton("🏰 Casa", callback_data="casa")],
+            [InlineKeyboardButton("⚔️ Arena", callback_data="arena"), InlineKeyboardButton("🎪 Eventos", callback_data="eventos")],
+            [InlineKeyboardButton("💎 VIP", callback_data="vip_menu"), InlineKeyboardButton("🔐 Admin", callback_data="admin_menu")],
+            [InlineKeyboardButton("📊 Stats", callback_data="stats"), InlineKeyboardButton("📚 Grimório", callback_data="grimorio")],
+            [InlineKeyboardButton("👶 Filhos", callback_data="filhos"), InlineKeyboardButton("⚗️ Transmutação", callback_data="transmutacao")],
+            [InlineKeyboardButton("🏠 Invadir", callback_data="invasao"), InlineKeyboardButton("💰 Mercado", callback_data="mercado")],
+            [InlineKeyboardButton("✨ Prestige", callback_data="prestige")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text("🧛‍♂️ **MENU PRINCIPAL**", reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em menu: {e}")
+
+async def magia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sistema de magia"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        texto = f"🧙 **SISTEMA DE MAGIA**\n\nNível: {player['nvl_magia']}\nRituais: {player['rituais_feitos']}\n\n**Rituais:**\n"
+        texto += "• Poder - 50 ouro\n• Cura - 30 ouro\n• Proteção - 40 ouro\n• Maldição - 100 ouro"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em magia: {e}")
+
+async def vip_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menu VIP"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        vips = carregar_vips()
+        user_id = str(update.effective_user.id)
+        
+        eh_premium = user_id in vips["vips_premium"]
+        eh_vip = user_id in vips["vips"]
+        
+        if eh_premium:
+            status = "💎💎 VIP PREMIUM"
+        elif eh_vip:
+            status = "💎 VIP"
+        else:
+            status = "❌ Não é VIP"
+        
+        texto = f"💎 **VIP SYSTEM**\n\n{status}\n\n**Benefícios VIP:**\n• ✅ Cooldown -25%\n• ✅ XP +25%\n• ✅ Ouro +25%"
+        texto += f"\n\n**Benefícios PREMIUM:**\n• ✅ Cooldown -50%\n• ✅ XP +50%\n• ✅ Ouro +50%"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em vip_menu: {e}")
+
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menu admin"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        admins = carregar_admins()
+        user_id = str(update.effective_user.id)
+        
+        eh_admin = user_id in admins["admins"] or user_id in admins["super_admins"]
+        
+        if not eh_admin:
+            await query.edit_message_text("❌ Sem permissão!")
+            return
+        
+        texto = "🔐 **PAINEL ADMIN**\n\n✅ Permissão Confirmada\n\n**Funções:**\n• Gerenciar VIPs\n• Estatísticas\n• Usuários"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em admin_menu: {e}")
+
+async def comprar_casa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comprar casa"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        
+        if player["casa"]:
+            await query.answer("❌ Você já tem uma casa!")
+            return
+        
+        texto = "🏠 **QUAL CASA VOCÊ QUER?**\n\n"
+        texto += "🏠 Básica - 5000 ouro\n"
+        texto += "🏠 Luxuosa - 15000 ouro\n"
+        texto += "🏰 Mansão - 50000 ouro\n"
+        texto += "🏯 Castelo - 100000 ouro"
+        
+        keyboard = [
+            [InlineKeyboardButton("🏠 Básica", callback_data="efetuar_basica"), InlineKeyboardButton("🏠 Luxuosa", callback_data="efetuar_luxuosa")],
+            [InlineKeyboardButton("🏰 Mansão", callback_data="efetuar_mansao"), InlineKeyboardButton("🏯 Castelo", callback_data="efetuar_castelo")],
+            [InlineKeyboardButton("❌ Cancelar", callback_data="casa")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em comprar_casa: {e}")
+
+async def desafiar_arena(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Desafiar na arena"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            return
+        
+        player = dados["players"][user_id]
+        players_arena = [p for p in dados["players"].values() if p["status"] == "vivo" and p["nome"] != player["nome"]]
+        
+        if not players_arena:
+            await query.answer("❌ Sem oponentes!")
+            return
+        
+        oponente = random.choice(players_arena)
+        
+        bonus_idade_p = player["idade_vampiro"] * 0.3 if player["classe"] != "Humano" else 0
+        bonus_idade_o = oponente["idade_vampiro"] * 0.3 if oponente["classe"] != "Humano" else 0
+        
+        dano_p = random.randint(int(player["ataque"] + bonus_idade_p), int(player["ataque"] + 20 + bonus_idade_p)) - oponente["defesa"]
+        dano_o = random.randint(int(oponente["ataque"] + bonus_idade_o), int(oponente["ataque"] + 20 + bonus_idade_o)) - player["defesa"]
+        
+        dano_p, dano_o = max(1, dano
+_p), max(1, dano_o)
+        ganhou = dano_p > dano_o
+        
+        if ganhou:
+            player["arena_rank"] = player.get("arena_rank", 0) + 1
+            oponente["arena_rank"] = max(0, oponente.get("arena_rank", 1) - 1)
+            ganhar_xp(player, 100)
+            player["ouro"] += 100
+            res = f"✅ **VITÓRIA NA ARENA!**\n\nRank: +1\nOuro: +100"
+        else:
+            player["arena_rank"] = max(0, player.get("arena_rank", 1) - 1)
+            res = f"❌ **DERROTA NA ARENA!**\n\nRank: -1"
+        
+        salvar_dados(dados)
+        
+        await query.answer("⚔️ Arena!")
+        await query.edit_message_text(
+            f"⚔️ **{oponente['nome']}**\n\n"
+            f"Seu dano: {dano_p}\n"
+            f"Dano dele: {dano_o}\n\n"
+            f"{res}\n"
+            f"Seu novo rank: {player.get('arena_rank', 0)}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em desafiar_arena: {e}")
+
+# ============ HANDLER DE OPERAÇÕES BANCÁRIAS ============
+
+async def operacao_banco(update: Update, context: ContextTypes.DEFAULT_TYPE, tipo: str, valor: int):
+    """Operações bancárias"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            await query.answer("❌ Jogador não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        
+        if tipo == "dep":
+            if player["ouro"] < valor:
+                await query.answer("❌ Ouro insuficiente!")
+                return
+            player["ouro"] -= valor
+            player["bancos_ouro"] += valor
+            msg = f"✅ Depositados {valor} ouro!"
+        else:  # sac
+            if player["bancos_ouro"] < valor:
+                await query.answer("❌ Ouro insuficiente no banco!")
+                return
+            player["bancos_ouro"] -= valor
+            player["ouro"] += valor
+            msg = f"✅ Sacados {valor} ouro!"
+        
+        salvar_dados(dados)
+        await query.answer(msg)
+        await banco(update, context)
+    except Exception as e:
+        logger.error(f"Erro em operacao_banco: {e}")
+
+# ============ HANDLER DE CRAFT ============
+
+async def executar_craft(update: Update, context: ContextTypes.DEFAULT_TYPE, tipo: str):
+    """Executar craft"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        vips = carregar_vips()
+        
+        if user_id not in dados["players"]:
+            await query.answer("❌ Jogador não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        
+        vip_bonus = 1.5 if user_id in vips["vips_premium"] else (1.25 if user_id in vips["vips"] else 1)
+        
+        receitas = {
+            "cura": {"ing": {"Sangue Antigo": 2}, "res": "Poção de Cura", "xp": 25},
+            "forca": {"ing": {"Grimório": 1, "Sangue Antigo": 1}, "res": "Poção de Força", "xp": 30},
+            "elixir": {"ing": {"Cálice": 1}, "res": "Elixir de Vida", "xp": 50},
+            "ritual": {"ing": {"Cristal": 1}, "res": "Ritual de Poder", "xp": 75},
+            "maldicao": {"ing": {"Essência": 2}, "res": "Maldição Ancestral", "xp": 100},
+            "velocidade": {"ing": {"Adaga": 1, "Essência": 1}, "res": "Poção de Velocidade", "xp": 40}
+        }
+        
+        if tipo not in receitas:
+            await query.answer("❌ Craft inválido!")
+            return
+        
+        receita = receitas[tipo]
+        
+        # Verificar ingredientes
+        for ing, qtd in receita["ing"].items():
+            tem = False
+            for item in player["inventario"]:
+                if item["nome"] == ing and item["quantidade"] >= qtd:
+                    tem = True
+                    break
+            if not tem:
+                await query.answer(f"❌ Faltam: {qtd}x {ing}")
+                return
+        
+        # Remover ingredientes
+        for ing, qtd in receita["ing"].items():
+            for item in player["inventario"]:
+                if item["nome"] == ing:
+                    item["quantidade"] -= qtd
+                    if item["quantidade"] <= 0:
+                        player["inventario"].remove(item)
+                    break
+        
+        # Adicionar resultado
+        tem = False
+        for item in player["inventario"]:
+            if item["nome"] == receita["res"]:
+                item["quantidade"] += 1
+                tem = True
+                break
+        
+        if not tem:
+            player["inventario"].append({"nome": receita["res"], "quantidade": 1})
+        
+        xp = int(receita["xp"] * vip_bonus)
+        ganhar_xp(player, xp, vip_bonus)
+        player["rituais_feitos"] += 1
+        salvar_dados(dados)
+        
+        await query.answer("✅ Craftado!")
+        await query.edit_message_text(
+            f"✅ **{receita['res']}**\n\n"
+            f"+{xp} XP {'(+VIP Bonus!)' if vip_bonus > 1 else ''}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em executar_craft: {e}")
+
+# ============ HANDLER DE TRANSFORMAÇÃO ============
+
+async def executar_trans(update: Update, context: ContextTypes.DEFAULT_TYPE, classe: str, ataque_bonus: int):
+    """Executar transformação"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            await query.answer("❌ Jogador não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        
+        emoji_dict = {
+            "Vampiro": "🧛‍♂️",
+            "Lobisomem": "🐺",
+            "Bruxo": "✨",
+            "Híbrido": "💀",
+            "Original": "👑"
+        }
+        emoji = emoji_dict.get(classe, "")
+        
+        player["classe"] = classe
+        player["data_transformacao"] = datetime.now().isoformat()
+        player["idade_vampiro"] = 0
+        player["transformacoes"].append({
+            "tipo": classe,
+            "data": datetime.now().isoformat()
+        })
+        player["ataque"] += ataque_bonus
+        player["poder"] = calcular_poder(classe, 0, player["nivel"], player["prestige"])
+        desbloquear_habilidade(player)
+        ganhar_xp(player, 100)
+        salvar_dados(dados)
+        
+        await query.answer(f"{emoji} Transformado!")
+        await query.edit_message_text(
+            f"{emoji} **Você é um {classe} agora!**\n\n"
+            f"➕ Ataque: +{ataque_bonus}\n"
+            f"💪 Poder: {player['poder']}\n"
+            f"✨ Habilidades desbloqueadas!",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em executar_trans: {e}")
+
+# ============ HANDLER DE FAÇÕES ============
+
+async def escolher_faccao(update: Update, context: ContextTypes.DEFAULT_TYPE, faccao: str):
+    """Escolher fação"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            await query.answer("❌ Jogador não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        player["faccao"] = faccao
+        salvar_dados(dados)
+        
+        bonus = int(FACCOES[faccao]['bonus'] * 100)
+        await query.answer(f"✅ Fação: {faccao}")
+        await query.edit_message_text(
+            f"✅ **{faccao}**!\n\n"
+            f"{FACCOES[faccao]['emoji']} {FACCOES[faccao]['desc']}\n"
+            f"Bonus: +{bonus}%",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em escolher_faccao: {e}")
+
+# ============ HANDLER DE SHOP ============
+
+async def comprar_item(update: Update, context: ContextTypes.DEFAULT_TYPE, item: str, preco: int):
+    """Comprar item na loja"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        vips = carregar_vips()
+        
+        if user_id not in dados["players"]:
+            await query.answer("❌ Jogador não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        
+        desconto = 30 if user_id in vips["vips_premium"] else (15 if user_id in vips["vips"] else 0)
+        preco_final = int(preco * (1 - desconto/100))
+        
+        if player["ouro"] < preco_final:
+            await query.answer("❌ Sem ouro!")
+            return
+        
+        player["ouro"] -= preco_final
+        
+        tem = False
+        for i in player["inventario"]:
+            if i["nome"] == item:
+                i["quantidade"] += 1
+                tem = True
+                break
+        
+        if not tem:
+            player["inventario"].append({"nome": item, "quantidade": 1})
+        
+        salvar_dados(dados)
+        
+        desc = f" (-{desconto}%)" if desconto > 0 else ""
+        await query.answer("✅ Comprado!")
+        await query.edit_message_text(
+            f"✅ **{item}**\n\n"
+            f"Preço: {preco_final}${desc}\n"
+            f"💰 Resto: {player['ouro']}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em comprar_item: {e}")
+
+# ============ HANDLER DE SKILLS ============
+
+async def skill_add(update: Update, context: ContextTypes.DEFAULT_TYPE, tipo: str):
+    """Adicionar skill points"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            await query.answer("❌ Jogador não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        
+        if player['skill_points'] <= 0:
+            await query.answer("❌ Sem points!")
+            return
+        
+        if tipo == "ataque":
+            player['skill_ataque'] += 1
+            player['ataque'] += 2
+        elif tipo == "defesa":
+            player['skill_defesa'] += 1
+            player['defesa'] += 2
+        elif tipo == "energia":
+            player['skill_energia'] += 1
+            player['energia'] = min(100, player['energia'] + 20)
+        
+        player['skill_points'] -= 1
+        salvar_dados(dados)
+        
+        await query.answer(f"✅ +1 {tipo}!")
+        await skills(update, context)
+    except Exception as e:
+        logger.error(f"Erro em skill_add: {e}")
+
+# ============ HANDLER DE CASA ============
+
+async def efetuar_compra_casa(update: Update, context: ContextTypes.DEFAULT_TYPE, tipo: str):
+    """Efetuar compra de casa"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        casas = carregar_casas()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            await query.answer("❌ Jogador não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        
+        casas_tipos = {
+            "basica": {"nome": "Casa Básica", "preco": 5000, "renda": 50},
+            "luxuosa": {"nome": "Casa Luxuosa", "preco": 15000, "renda": 150},
+            "mansao": {"nome": "Mansão", "preco": 50000, "renda": 500},
+            "castelo": {"nome": "Castelo", "preco": 100000, "renda": 1000}
+        }
+        
+        if tipo not in casas_tipos:
+            await query.answer("❌ Tipo inválido!")
+            return
+        
+        casa_tipo = casas_tipos[tipo]
+        
+        if player["ouro"] < casa_tipo["preco"]:
+            await query.answer(f"❌ Você precisa de {casa_tipo['preco']} ouro!")
+            return
+        
+        player["ouro"] -= casa_tipo["preco"]
+        player["casa"] = casa_tipo["nome"]
+        player["renda_passiva"] = casa_tipo["renda"]
+        
+        if "casas" not in casas:
+            casas["casas"] = {}
+        
+        casas["casas"][casa_tipo["nome"]] = {
+            "dono": user_id,
+            "preco": casa_tipo["preco"],
+            "renda_passiva": casa_tipo["renda"],
+            "nivel": 1,
+            "descricao": f"{casa_tipo['nome']} de {player['nome']}",
+            "data_compra": datetime.now().isoformat()
+        }
+        
+        salvar_dados(dados)
+        salvar_casas(casas)
+        
+        await query.answer(f"✅ Casa comprada!")
+        await query.edit_message_text(
+            f"🏰 **{casa_tipo['nome']}**\n\n"
+            f"Comprada por {casa_tipo['preco']} ouro!\n"
+            f"Renda diária: {casa_tipo['renda']}\n"
+            f"💰 Ouro restante: {player['ouro']}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em efetuar_compra_casa: {e}")
+
+# ============ HANDLER DE PRESTIGE ============
+
+async def confirmar_prestige(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirmar prestige"""
+    try:
+        query = update.callback_query
+        
+        dados = carregar_dados()
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in dados["players"]:
+            await query.answer("❌ Jogador não encontrado!")
+            return
+        
+        player = dados["players"][user_id]
+        
+        if player["nivel"] < 50:
+            await query.answer("❌ Nível insuficiente!")
+            return
+        
+        player["prestige"] += 1
+        player["nivel"] = 1
+        player["xp"] = 0
+        player["prestige_power"] = player["prestige"] * 10
+        player["titulo"] = f"Prestige {player['prestige']}"
+        player["poder"] = calcular_poder(player["classe"], player["idade_vampiro"], player["nivel"], player["prestige"])
+        
+        salvar_dados(dados)
+        
+        await query.answer(f"✨ Prestige {player['prestige']}!")
+        await query.edit_message_text(
+            f"✨ **PRESTIGE ALCANÇADO!**\n\n"
+            f"Novo Prestige: {player['prestige']}\n"
+            f"Bônus de Poder: +{player['prestige_power']}%\n"
+            f"Nível resetado para 1\n"
+            f"Novo Título: {player['titulo']}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Erro em confirmar_prestige: {e}")
+
+# ============ MAIN BUTTON HANDLER ============
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler central para todos os botões"""
+    query = update.callback_query
+    data = query.data
+    
+    try:
+        # Menu Principal
+        if data == "perfil":
+            await perfil(update, context)
+        elif data == "inventario":
+            await inventario(update, context)
+        elif data == "banco":
+            await banco(update, context)
+        elif data == "craftar":
+            await craftar(update, context)
+        elif data == "atacar":
+            await atacar(update, context)
+        elif data == "explorar":
+            await explorar(update, context)
+        elif data == "mundo":
+            await mundo(update, context)
+        elif data == "habilidades":
+            await habilidades(update, context)
+        elif data == "transformar":
+            await transformar(update, context)
+        elif data == "duel":
+            await duel(update, context)
+        elif data == "boss":
+            await boss(update, context)
+        elif data == "ranking":
+            await ranking(update, context)
+        elif data == "stats":
+            await stats(update, context)
+        elif data == "magia":
+            await magia(update, context)
+        elif data == "quests":
+            await quests(update, context)
+        elif data == "npcs":
+            await npcs(update, context)
+        elif data == "faccoes":
+            await faccoes(update, context)
+        elif data == "guildas":
+            await guildas(update, context)
+        elif data == "vip_menu":
+            await vip_menu(update, context)
+        elif data == "admin_menu":
+            await admin_menu(update, context)
+        elif data == "shop":
+            await shop(update, context)
+        elif data == "skills":
+            await skills(update, context)
+        elif data == "menu":
+            await menu(update, context)
+        elif data == "casa":
+            await casa(update, context)
+        elif data == "comprar_casa":
+            await comprar_casa(update, context)
+        elif data == "arena":
+            await arena(update, context)
+        elif data == "desafiar_arena":
+            await desafiar_arena(update, context)
+        elif data == "eventos":
+            await eventos(update, context)
+        elif data == "grimorio":
+            await grimorio(update, context)
+        elif data == "filhos":
+            await filhos(update, context)
+        elif data == "transmutacao":
+            await transmutacao(update, context)
+        elif data == "invasao":
+            await invasao(update, context)
+        elif data == "mercado":
+            await mercado(update, context)
+        elif data == "prestige":
+            await prestige(update, context)
+        elif data == "confirmar_prestige":
+            await confirmar_prestige(update, context)
+        
+        # Banco
+        elif data.startswith("banco_dep_"):
+            valor = int(data.split("_")[2])
+            await operacao_banco(update, context, "dep", valor)
+        elif data.startswith("banco_sac_"):
+            valor = int(data.split("_")[2])
+            await operacao_banco(update, context, "sac", valor)
+        
+        # Craft
+        elif data.startswith("craft_"):
+            tipo = data.split("_")[1]
+            await executar_craft(update, context, tipo)
+        
+        # Transformação
+        elif data.startswith("trans_"):
+            tipo = data.split("_")[1]
+            transformacoes = {
+                "vampiro": ("Vampiro", 10),
+                "lobo": ("Lobisomem", 12),
+                "bruxo": ("Bruxo", 8),
+                "hibrido": ("Híbrido", 15),
+                "original": ("Original", 20)
+            }
+            if tipo in transformacoes:
+                await executar_trans(update, context, transformacoes[tipo][0], transformacoes[tipo][1])
+        
+        # Fações
+        elif data.startswith("fac_"):
+            fac = data.split("_")[1].capitalize()
+            await escolher_faccao(update, context, fac)
+        
+        # Shop
+        elif data.startswith("comp_"):
+            itens = {
+                "potion": ("Poção de Cura", 100),
+                "amuleto": ("Amuleto", 500),
+                "grimorio": ("Grimório", 300),
+                "adaga": ("Adaga", 800),
+                "sangue": ("Sangue", 150),
+                "cristal": ("Cristal", 600),
+                "escudo": ("Escudo", 700),
+                "elixir": ("Elixir Vida", 1000)
+            }
+            tipo = data.split("_")[1]
+            if tipo in itens:
+                await comprar_item(update, context, itens[tipo][0], itens[tipo][1])
+        
+        # Skills
+        elif data.startswith("skill_"):
+            tipo = data.split("_")[1]
+            await skill_add(update, context, tipo)
+        
+        # Casa
+        elif data.startswith("efetuar_"):
+            tipo = data.split("_")[1]
+            await efetuar_compra_casa(update, context, tipo)
+    
+    except Exception as e:
+        logger.error(f"Erro em button_handler: {e}")
+
+async def set_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /token"""
+    try:
+        if not context.args:
+            await update.message.reply_text("Use: `/token SEU_TOKEN`", parse_mode="Markdown")
+            return
+        
+        token = context.args[0]
+        config = carregar_config()
+        config["token"] = token
+        salvar_config(config)
+        
+        await update.message.reply_text("✅ Token configurado!", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Erro em set_token: {e}")
+
+def main():
+    """Função principal"""
+    try:
+        config = carregar_config()
+        token = config.get("token")
+        
+        if not token or token == "":
+            print("=" * 70)
+            print("❌ TOKEN NÃO CONFIGURADO!")
+            print("=" * 70)
+            print("\n1. Crie um arquivo 'config.json':")
+            print('{"token": "SEU_TOKEN_AQUI"}')
+            print("\n2. Ou use: /token SEU_TOKEN")
+            print("=" * 70)
+            return
+        
+        app = Application.builder().token(token).build()
+        
+        # Handlers
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("token", set_token))
+        app.add_handler(CallbackQueryHandler(button_handler))
+        
+        # Startup message
+        print("=" * 70)
+        print("🧛‍♂️ THE VAMPIRE DIARIES ULTIMATE RPG - 54+ SISTEMAS")
+        print("=" * 70)
+        print("✨ BOT INICIADO COM SUCESSO!")
+        print("=" * 70)
+        print("✅ SISTEMAS ATIVOS:")
+        print("   ✓ Sistema de Idade & Poder")
+        print("   ✓ Prestige & Reencarnação")
+        print("   ✓ Dia/Noite Dinâmico")
+        print("   ✓ Casa/Mansão com renda passiva")
+        print("   ✓ Sistema de Arenas")
+        print("   ✓ Eventos Temáticos")
+        print("   ✓ Filhos & Herança")
+        print("   ✓ Transmutação de Itens")
+        print("   ✓ Invasão de Casas")
+        print("   ✓ Grimório Pessoal")
+        print("   ✓ Combate PvP Avançado")
+        print("   ✓ Duelos Estruturados")
+        print("   ✓ Boss Fights (5 bosses)")
+        print("   ✓ Sistema de Guildas")
+        print("   ✓ 5 Fações com Bônus")
+        print("   ✓ Craft Completo")
+        print("   ✓ Banco Seguro")
+        print("   ✓ Shop com 8 itens")
+        print("   ✓ VIP System (2 níveis)")
+        print("   ✓ Admin Panel")
+        print("   ✓ Ranking Global")
+        print("   ✓ Skill Points")
+        print("   ✓ 12+ NPCs com Idade & Poder")
+        print("   ✓ 15+ Locações para explorar")
+        print("   ✓ Transformações (5 classes)")
+        print("   ✓ Sistema de Magia")
+        print("   ✓ Quests e Missões")
+        print("   ✓ Estatísticas Globais")
+        print("   ✓ Mercado Global")
+        print("   ✓ E muito mais!")
+        print("=" * 70)
+        print("⏳ Aguardando conexões...")
+        print("=" * 70)
+        
+        app.run_polling()
+    except Exception as e:
+        print(f"❌ ERRO: {e}")
+
+if __name__ == "__main__":
+    main()
